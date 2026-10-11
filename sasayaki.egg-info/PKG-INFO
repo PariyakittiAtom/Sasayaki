@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: sasayaki
+Version: 0.1.0
+Summary: Context-aware subtitle generator for Japanese/Korean ASMR audio
+Requires-Python: >=3.12
+Requires-Dist: faster-whisper>=1.1
+Requires-Dist: PySide6>=6.7
+Requires-Dist: numpy
+Requires-Dist: anthropic>=1.0
+Requires-Dist: keyring
+Requires-Dist: platformdirs
+Requires-Dist: nvidia-cublas-cu12; sys_platform == "win32"
+Requires-Dist: nvidia-cudnn-cu12; sys_platform == "win32"
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"

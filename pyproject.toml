@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sasayaki"
+version = "0.1.0"
+description = "Context-aware subtitle generator for Japanese/Korean ASMR audio"
+requires-python = ">=3.12"
+dependencies = [
+    "faster-whisper>=1.1",
+    "PySide6>=6.7",
+    "numpy",
+    "anthropic>=1.0",
+    "keyring",
+    "platformdirs",
+    "nvidia-cublas-cu12; sys_platform == 'win32'",
+    "nvidia-cudnn-cu12; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["sasayaki*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
