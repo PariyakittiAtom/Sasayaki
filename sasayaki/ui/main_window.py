@@ -18,6 +18,7 @@ from .covers import cover_pixmap, remove_cover
 from .dialogs import AddTracksDialog, CollectionDialog, SettingsDialog
 from .library_view import STAGE_LABEL, CollectionPage
 from .player_view import PlayerView
+from .sync_manager import SyncManager
 
 
 class MainWindow(QMainWindow):
@@ -57,6 +58,15 @@ class MainWindow(QMainWindow):
         new.setObjectName("primary")
         new.clicked.connect(self.new_collection)
         sl.addWidget(new)
+        self.btn_sync = QPushButton("☁  Sync now")
+        self.btn_sync.setToolTip("Upload new audio and subtitles to your cloud library (Settings → Cloud sync)")
+        self.btn_sync.clicked.connect(self._sync_now)
+        sl.addWidget(self.btn_sync)
+        self.sync_status = QLabel("")
+        self.sync_status.setObjectName("muted")
+        self.sync_status.setWordWrap(True)
+        self.sync_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        sl.addWidget(self.sync_status)
         st = QPushButton("Settings")
         st.clicked.connect(self.open_settings)
         sl.addWidget(st)
@@ -89,6 +99,11 @@ class MainWindow(QMainWindow):
         self.player.back.connect(self._leave_player)
         self.player.trackEnded.connect(self._play_next)
         self.player.retranslateTrack.connect(lambda tid: self.queue.enqueue(tid, "translate"))
+        self.sync = SyncManager(queue.db_path, lambda: self.settings, self)
+        self.sync.status.connect(self._on_sync_status)
+        self.sync.finished.connect(self.page.refresh)
+        self.sync.busy.connect(lambda b: self.btn_sync.setEnabled(not b))
+        self.page.libraryChanged.connect(lambda: self.sync.request())
         queue.changed.connect(self._on_job_changed)
         queue.progress.connect(self._on_job_progress)
         queue.message.connect(lambda m: self.statusBar().showMessage(m, 8000))
@@ -139,6 +154,7 @@ class MainWindow(QMainWindow):
             cid = self.repo.add_collection(d["name"], d["cover_path"], d["description"])
             self.repo.update_collection(cid, glossary=d["glossary"])
             self.refresh_sidebar(select=cid)
+            self.sync.request()
 
     def edit_collection(self) -> None:
         c = self.repo.collection(self._current_cid) if self._current_cid else None
@@ -151,6 +167,7 @@ class MainWindow(QMainWindow):
                 remove_cover(c.cover_path)
             self.repo.update_collection(c.id, name=d["name"], cover_path=d["cover_path"], description=d["description"], glossary=d["glossary"])
             self.refresh_sidebar(select=c.id)
+            self.sync.request()
 
     def delete_collection(self) -> None:
         c = self.repo.collection(self._current_cid) if self._current_cid else None
@@ -169,6 +186,7 @@ class MainWindow(QMainWindow):
         self.repo.delete_collection(c.id)
         self._current_cid = None
         self.refresh_sidebar()
+        self.sync.request()  # also removes the cloud copy
 
     # ------------------------------------------------------------------ tracks
     def add_files(self, files: list[str]) -> None:
@@ -196,6 +214,7 @@ class MainWindow(QMainWindow):
         t = self.repo.track(tid)
         if t and t.status == "done":
             self.statusBar().showMessage(f"Subtitles ready: {t.title}", 6000)
+            self.sync.request()
         elif t and t.status == "error":
             self.statusBar().showMessage(f"{t.title}: {t.error}", 12000)
 
@@ -218,6 +237,7 @@ class MainWindow(QMainWindow):
     def _leave_player(self) -> None:
         self.stack.setCurrentWidget(self.page)
         self.page.refresh()
+        self.sync.request()  # line edits made in the player
 
     def _play_next(self) -> None:
         """Autoplay the next finished track of the same collection."""
@@ -235,9 +255,31 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ settings / lifecycle
     def open_settings(self) -> None:
-        SettingsDialog(self.settings, self).exec()
+        if SettingsDialog(self.settings, self).exec():
+            self.sync.request()
+
+    def _on_sync_status(self, msg: str, error: bool) -> None:
+        self.statusBar().showMessage(msg, 15000 if error else 6000)
+        text = msg.removeprefix("Cloud sync: ").removeprefix("Cloud sync ")
+        self.sync_status.setText(text)
+        self.sync_status.setToolTip(msg)
+        self.sync_status.setStyleSheet("color: #ff7a8a;" if error else "")
+
+    def _sync_now(self) -> None:
+        missing = self.sync.missing()
+        if missing:
+            if QMessageBox.question(
+                self, "Cloud sync",
+                "Cloud sync is missing: " + ", ".join(missing) + ".\n\nIn Settings → Cloud sync fill these in and press OK "
+                "(Cancel throws your changes away). Open Settings now?",
+            ) == QMessageBox.Yes:
+                self.open_settings()
+            return
+        self.statusBar().showMessage("Cloud sync: starting…", 4000)
+        self.sync.request(now=True)
 
     def closeEvent(self, e) -> None:
         self.player.stop()
+        self.sync.shutdown()
         self.queue.shutdown()
         e.accept()

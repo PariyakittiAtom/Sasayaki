@@ -12,6 +12,7 @@ from platformdirs import user_data_dir
 APP_NAME = "Sasayaki"
 KEYRING_SERVICE = "Sasayaki"
 KEYRING_USER = "anthropic_api_key"
+KEYRING_SUPABASE_USER = "supabase_password"
 
 
 def data_dir() -> Path:
@@ -61,6 +62,12 @@ class Settings:
     subtitle_offset_ms: int = 0
     show_source: bool = True
     font_size: int = 28
+    # cloud sync (Supabase). The anon key is public by design; access is limited by row-level security.
+    sync_enabled: bool = False
+    supabase_url: str = ""
+    supabase_anon_key: str = ""
+    supabase_email: str = ""
+    sync_audio: str = "auto"  # auto = compress files over the free-plan size limit | compressed | original
     extra: dict = field(default_factory=dict)
 
     @classmethod
@@ -98,3 +105,18 @@ def set_api_key(key: str) -> None:
     import keyring
 
     keyring.set_password(KEYRING_SERVICE, KEYRING_USER, key)
+
+
+def get_supabase_password() -> str | None:
+    try:
+        import keyring
+
+        return keyring.get_password(KEYRING_SERVICE, KEYRING_SUPABASE_USER)
+    except Exception:
+        return None
+
+
+def set_supabase_password(password: str) -> None:
+    import keyring
+
+    keyring.set_password(KEYRING_SERVICE, KEYRING_SUPABASE_USER, password)

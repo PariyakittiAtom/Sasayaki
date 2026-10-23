@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..config import Settings, get_api_key, set_api_key
+from ..config import Settings, get_api_key, get_supabase_password, set_api_key, set_supabase_password
 from .covers import cover_pixmap, import_cover, remove_cover
 
 IMAGE_FILTER = "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif)"
@@ -263,6 +263,42 @@ class SettingsDialog(QDialog):
         self.device.setCurrentIndex(self.device.findData(settings.whisper_device))
         form.addRow("Device", self.device)
 
+        head = QLabel("<b>Cloud sync</b> (Supabase): keeps your audio and subtitles online for the Android app")
+        head.setWordWrap(True)
+        form.addRow(head)
+        self.sync_on = QCheckBox("Upload my library automatically")
+        self.sync_on.setChecked(settings.sync_enabled)
+        form.addRow("", self.sync_on)
+        self.sb_url = QLineEdit(settings.supabase_url)
+        self.sb_url.setPlaceholderText("https://xxxx.supabase.co")
+        form.addRow("Project URL", self.sb_url)
+        self.sb_key = QLineEdit(settings.supabase_anon_key)
+        self.sb_key.setPlaceholderText("anon / publishable key")
+        form.addRow("Anon key", self.sb_key)
+        self.sb_email = QLineEdit(settings.supabase_email)
+        form.addRow("Account email", self.sb_email)
+        self.sb_pw = QLineEdit()
+        self.sb_pw.setEchoMode(QLineEdit.Password)
+        self.sb_pw.setPlaceholderText("Stored in Windows Credential Manager" if get_supabase_password() else "Account password")
+        form.addRow("Account password", self.sb_pw)
+        self.sync_audio = QComboBox()
+        self.sync_audio.addItem("Auto: compress files over 50 MB", "auto")
+        self.sync_audio.addItem("Always compress (smallest)", "compressed")
+        self.sync_audio.addItem("Always original quality", "original")
+        self.sync_audio.setCurrentIndex(max(0, self.sync_audio.findData(settings.sync_audio)))
+        self.sync_audio.setToolTip("Compressed audio is Opus ~96 kbps: about a quarter of an MP3's size. The free Supabase plan "
+                                   "allows 50 MB per file and 1 GB in total.")
+        form.addRow("Upload audio", self.sync_audio)
+        sb_row = QHBoxLayout()
+        self.btn_sb_test = QPushButton("Test cloud connection")
+        self.btn_sb_test.clicked.connect(self._test_cloud)
+        sb_row.addWidget(self.btn_sb_test)
+        sb_row.addStretch()
+        form.addRow("", sb_row)
+        self.sb_result = QLabel("")
+        self.sb_result.setWordWrap(True)
+        form.addRow("", self.sb_result)
+
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(self._save)
         bb.rejected.connect(self.reject)
@@ -299,6 +335,23 @@ class SettingsDialog(QDialog):
 
         run_async(lambda: test_claude_connection(s, typed), done, failed, self)
 
+    def _test_cloud(self) -> None:
+        from ..sync.service import check_connection
+        from .async_util import run_async
+
+        url, key, email = self.sb_url.text().strip().rstrip("/"), self.sb_key.text().strip(), self.sb_email.text().strip()
+        pw = self.sb_pw.text() or get_supabase_password() or ""
+        self.btn_sb_test.setEnabled(False)
+        self.sb_result.setStyleSheet("")
+        self.sb_result.setText("Testing…")
+
+        def finish(msg: str, ok: bool) -> None:
+            self.btn_sb_test.setEnabled(True)
+            self.sb_result.setStyleSheet("color: #7fd8a6;" if ok else "color: #ff7a8a;")
+            self.sb_result.setText(msg)
+
+        run_async(lambda: check_connection(url, key, email, pw), lambda m: finish(m, True), lambda m: finish(m, False), self)
+
     def _open_logs(self) -> None:
         import os
 
@@ -323,6 +376,17 @@ class SettingsDialog(QDialog):
         s.ollama_model = self.ollama_model.text().strip() or s.ollama_model
         s.whisper_model = self.whisper.currentText().strip() or s.whisper_model
         s.whisper_device = self.device.currentData()
+        if self.sb_pw.text():
+            try:
+                set_supabase_password(self.sb_pw.text())
+            except Exception as e:  # noqa: BLE001
+                QMessageBox.warning(self, "Cloud sync", f"Could not store the password securely:\n{e}")
+                return
+        s.sync_enabled = self.sync_on.isChecked()
+        s.supabase_url = self.sb_url.text().strip().rstrip("/")
+        s.supabase_anon_key = self.sb_key.text().strip()
+        s.supabase_email = self.sb_email.text().strip()
+        s.sync_audio = self.sync_audio.currentData()
         s.save()
         self.accept()
 

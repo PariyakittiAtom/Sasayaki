@@ -77,6 +77,7 @@ class JobQueue(QObject):
 
     def __init__(self, db_path: str, get_settings, parent=None):
         super().__init__(parent)
+        self.db_path = db_path
         self._w = _Worker(db_path, get_settings)
         self._w.progress.connect(self.progress)
         self._w.changed.connect(self.changed)

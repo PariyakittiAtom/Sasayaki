@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..models import Cue
@@ -52,7 +52,19 @@ CREATE TABLE IF NOT EXISTS cue (
     user_edited INTEGER NOT NULL DEFAULT 0,
     UNIQUE(track_id, idx)
 );
+CREATE TABLE IF NOT EXISTS sync_tombstone (   -- things deleted locally that still exist in the cloud copy
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,                       -- collections | tracks
+    remote_id TEXT NOT NULL,
+    storage_json TEXT NOT NULL DEFAULT '[]'   -- [[bucket, path], ...] files to remove with it
+);
 """
+
+# Columns added after the first release; applied to existing databases by Repo._migrate.
+MIGRATIONS = {
+    "collection": [("remote_id", "TEXT"), ("sync_state_json", "TEXT NOT NULL DEFAULT '{}'")],
+    "track": [("remote_id", "TEXT"), ("sync_state_json", "TEXT NOT NULL DEFAULT '{}'")],
+}
 
 STATUS_DONE = "done"
 
@@ -65,6 +77,8 @@ class Collection:
     description: str
     glossary: list[dict]
     created_at: float
+    remote_id: str | None = None
+    sync_state: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -83,6 +97,8 @@ class Track:
     quality: str
     context_card: dict | None
     added_at: float
+    remote_id: str | None = None
+    sync_state: dict = field(default_factory=dict)
 
     @property
     def audio_exists(self) -> bool:
@@ -90,7 +106,10 @@ class Track:
 
 
 def _col(r: sqlite3.Row) -> Collection:
-    return Collection(r["id"], r["name"], r["cover_path"], r["description"], json.loads(r["glossary_json"] or "[]"), r["created_at"])
+    return Collection(
+        r["id"], r["name"], r["cover_path"], r["description"], json.loads(r["glossary_json"] or "[]"), r["created_at"],
+        r["remote_id"], json.loads(r["sync_state_json"] or "{}"),
+    )
 
 
 def _track(r: sqlite3.Row) -> Track:
@@ -98,6 +117,7 @@ def _track(r: sqlite3.Row) -> Track:
     return Track(
         r["id"], r["collection_id"], r["title"], r["audio_path"], r["duration_ms"], r["src_lang"], r["sort_order"],
         r["status"], r["stage_progress"], r["error"], r["hint"], r["quality"], card, r["added_at"],
+        r["remote_id"], json.loads(r["sync_state_json"] or "{}"),
     )
 
 
@@ -109,6 +129,18 @@ class Repo:
         self.db.execute("PRAGMA foreign_keys = ON")
         self.db.execute("PRAGMA journal_mode = WAL")
         self.db.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        for table, cols in MIGRATIONS.items():
+            have = {r["name"] for r in self.db.execute(f"PRAGMA table_info({table})")}
+            for name, decl in cols:
+                if name not in have:
+                    try:
+                        self.db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                    except sqlite3.OperationalError:  # another connection migrated first
+                        pass
+        self.db.commit()
 
     def close(self) -> None:
         self.db.close()
@@ -137,6 +169,12 @@ class Repo:
             self.db.commit()
 
     def delete_collection(self, cid: int) -> None:
+        col = self.collection(cid)
+        if col is not None and col.remote_id:
+            storage = [["audio", t.sync_state["audio_path"]] for t in self.tracks(cid) if t.sync_state.get("audio_path")]
+            if col.sync_state.get("cover_path"):
+                storage.append(["covers", col.sync_state["cover_path"]])
+            self._tombstone("collections", col.remote_id, storage)
         self.db.execute("DELETE FROM collection WHERE id=?", (cid,))
         self.db.commit()
 
@@ -183,6 +221,9 @@ class Repo:
             self.db.commit()
 
     def delete_track(self, tid: int) -> None:
+        t = self.track(tid)
+        if t is not None and t.remote_id:
+            self._tombstone("tracks", t.remote_id, [["audio", t.sync_state["audio_path"]]] if t.sync_state.get("audio_path") else [])
         self.db.execute("DELETE FROM track WHERE id=?", (tid,))
         self.db.commit()
 
@@ -223,4 +264,23 @@ class Repo:
             "UPDATE cue SET start_ms=?,end_ms=?,src_text=?,en_text=?,confidence=?,flags=?,asr_fix=?,user_edited=? WHERE track_id=? AND idx=?",
             (c.start_ms, c.end_ms, c.src, c.en, c.confidence, json.dumps(c.flags), c.asr_fix, int(c.user_edited), tid, c.idx),
         )
+        self.db.commit()
+
+    # ---- cloud sync bookkeeping
+    def set_sync(self, table: str, row_id: int, remote_id: str | None = None, state: dict | None = None) -> None:
+        assert table in ("collection", "track")
+        if remote_id is not None:
+            self.db.execute(f"UPDATE {table} SET remote_id=? WHERE id=?", (remote_id, row_id))
+        if state is not None:
+            self.db.execute(f"UPDATE {table} SET sync_state_json=? WHERE id=?", (json.dumps(state), row_id))
+        self.db.commit()
+
+    def _tombstone(self, kind: str, remote_id: str, storage: list) -> None:
+        self.db.execute("INSERT INTO sync_tombstone(kind, remote_id, storage_json) VALUES (?,?,?)", (kind, remote_id, json.dumps(storage)))
+
+    def tombstones(self) -> list[tuple[int, str, str, list]]:
+        return [(r["id"], r["kind"], r["remote_id"], json.loads(r["storage_json"])) for r in self.db.execute("SELECT * FROM sync_tombstone ORDER BY id")]
+
+    def clear_tombstone(self, tomb_id: int) -> None:
+        self.db.execute("DELETE FROM sync_tombstone WHERE id=?", (tomb_id,))
         self.db.commit()

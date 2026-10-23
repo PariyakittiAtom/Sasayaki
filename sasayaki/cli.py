@@ -146,6 +146,9 @@ def main(argv: list[str] | None = None) -> int:
     t.add_argument("--quality", choices=["fast", "balanced", "high"])
     t.set_defaults(fn=cmd_translate)
 
+    y = sub.add_parser("sync", help="upload the library (audio + subtitles) to your Supabase project")
+    y.set_defaults(fn=cmd_sync)
+
     g = sub.add_parser("gui", help="open the desktop app (default when no command is given)")
     g.set_defaults(fn=lambda _a: _gui())
 
@@ -154,6 +157,21 @@ def main(argv: list[str] | None = None) -> int:
         return _gui()
     a = p.parse_args(args)
     return a.fn(a)
+
+
+def cmd_sync(_a) -> int:
+    from .config import data_dir
+    from .sync.client import SyncError
+    from .sync.service import sync_library
+
+    settings = Settings.load()
+    try:
+        rep = sync_library(str(data_dir() / "library.db"), settings, lambda s, f: print(f"\r{s} {f:4.0%}   ", end="", flush=True))
+    except SyncError as e:
+        print(f"\nSync failed: {e}")
+        return 1
+    print(f"\n{rep.summary()}")
+    return 1 if rep.failed else 0
 
 
 def _gui() -> int:

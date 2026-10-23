@@ -160,7 +160,8 @@ class CollectionPage(QWidget):
     @staticmethod
     def _status_text(t: Track) -> str:
         if t.status == "done":
-            return "Ready" + (f" · {t.error}" if t.error else "")
+            cloud = "☁ " if t.remote_id and t.sync_state.get("cues_hash") else ""
+            return cloud + "Ready" + (f" · {t.error}" if t.error else "")
         if t.status == "error":
             return f"Failed: {t.error}"[:90]
         if t.status in ("transcribing", "translating"):
